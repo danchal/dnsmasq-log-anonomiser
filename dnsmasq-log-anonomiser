@@ -1,0 +1,106 @@
+#!/usr/bin/python3
+import os, time, sys, configparser
+
+print('Starting ' + __file__ )
+
+try:
+    END_ACTIONS = ['cached', 'reply']
+    ALLOW_IP_ACTIONS = ['query[A]', 'query[AAAA]', 'query[PTR]', 'query[SRV]', 'forwarded']
+    FINAL_RESPONSE_CONTEXT = 'is'
+    CONFIG_FILE = '/etc/dnsmasq-log-anonomiser.conf'
+
+    def print_log_line(file, fields):
+        file.write('%s %s %s %s %s %s %s %s %s %s\n' % (fields[0], fields[1], fields[2], fields[3], fields[4], fields[5], fields[6], fields[7], fields[8], fields[9] ))
+        return
+
+    config = configparser.RawConfigParser()
+    config.read(CONFIG_FILE)
+
+    log_name_in = config.get('DEFAULT', 'DnsmasqLogIn')
+    log_name_out = config.get('DEFAULT', 'DnsmasqLogOut')
+    anon_domain = config.get('DEFAULT', 'AnonDomain')
+    anon_ip = config.get('DEFAULT', 'AnonIP')
+
+    print('DnsmasqLogIn<%s>, DnsmasqLogOut<%s>, AnonDomain<%s>, AnonIP<%s>' % (log_name_in, log_name_out, anon_domain, anon_ip) )
+
+    if not os.path.exists(log_name_in):
+        os.mkfifo(log_name_in)
+
+    log_in = open(log_name_in, 'r')
+    log_out = open(log_name_out, 'a')
+
+    # new logs are stored here whilst the query is being processed
+    log_entries = {}
+
+    while True:
+        line = log_in.readline()[:-1]
+        if line:
+            fields = line.split()
+
+            # only process actual dns response logs, i.e. with 10 fields
+            if len(fields) == 10:
+                id = fields[4]
+                action = fields[6]
+                context = fields[8]
+                domain = fields[7]
+                ip_addr = fields[9]
+
+                # create entry in log dictionary
+                if id not in log_entries:
+                    log_entries[id] = [fields]
+                else:
+                    value = log_entries[id]
+                    value.append(fields)
+                    log_entries[id] = value
+
+                # final dns response
+                if context == FINAL_RESPONSE_CONTEXT:
+                    # filter the allowed responses
+                    if action in END_ACTIONS:
+                        for fields in log_entries[id]:
+
+                            # anonomise the domain
+                            fields[7] = anon_domain
+
+                            if fields[6] not in ALLOW_IP_ACTIONS:
+                                # anonomise the ip address
+                                fields[9] = anon_ip
+
+                            print_log_line(log_out, fields)
+                    else:
+                        for fields in log_entries[id]:
+                            print_log_line(log_out, fields)
+
+                    # delete reply logs
+                    del log_entries[id]
+
+            # do not process line, just print it out
+            else:
+                log_out.write(line + '\n')
+
+            # flush the log immediately
+            log_out.flush()
+        else:
+            time.sleep(1)
+
+except KeyboardInterrupt:
+    # here you put any code you want to run before the program
+    # exits when you press CTRL+C
+    print('You Exited')
+
+except SystemExit:
+    # here you put any code you want to run before the program
+    # exits when you press CTRL+C
+    print('SystemExit')
+
+except:
+    # this catches ALL other exceptions including errors.
+    # You won't get any error messages for debugging
+    # so only use it once your code is working
+    print('Unexpected error:', sys.exc_info()[0])
+    raise
+
+finally:
+    log_in.close()
+    log_out.close()
+    print('Finally Exited')

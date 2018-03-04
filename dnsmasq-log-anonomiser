@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-import os, time, sys, configparser
+import os, time, sys, configparser, argparse
 
 print('Starting ' + __file__ )
 
@@ -7,27 +7,58 @@ try:
     END_ACTIONS = ['cached', 'reply']
     ALLOW_IP_ACTIONS = ['query[A]', 'query[AAAA]', 'query[PTR]', 'query[SRV]', 'forwarded']
     FINAL_RESPONSE_CONTEXT = 'is'
-    CONFIG_FILE = '/etc/dnsmasq-log-anonomiser.conf'
 
     def print_log_line(file, fields):
         file.write('%s %s %s %s %s %s %s %s %s %s\n' % (fields[0], fields[1], fields[2], fields[3], fields[4], fields[5], fields[6], fields[7], fields[8], fields[9] ))
         return
 
+    def get_file(argument, config, option):
+        if argument:
+            file_path = argument
+        elif config:
+            file_path = config
+        else:
+            file_path = sys.stdin
+
+        file = open(file_path, option)
+        return file
+
+    parser = argparse.ArgumentParser(description='Dnsmasq log anonomiser.')
+    parser.add_argument('-c','--config', help='configuration file',required=False, type=str)
+    parser.add_argument('-i','--input', help='input dnsmasq log file',required=False, type=str)
+    parser.add_argument('-o','--output', help='output dnsmasq log file',required=False, type=str)
+    parser.add_argument('-d','--domain', help='anonomous domain',required=False, type=str)
+    parser.add_argument('-a','--address', help='anonomous ip address',required=False, type=str)
+
+    args = parser.parse_args()
+
+    print(args)
+
     config = configparser.RawConfigParser()
-    config.read(CONFIG_FILE)
 
-    log_name_in = config.get('DEFAULT', 'DnsmasqLogIn')
-    log_name_out = config.get('DEFAULT', 'DnsmasqLogOut')
-    anon_domain = config.get('DEFAULT', 'AnonDomain')
-    anon_ip = config.get('DEFAULT', 'AnonIP')
+    if args.config:
+        config.read(args.config)
 
-    print('DnsmasqLogIn<%s>, DnsmasqLogOut<%s>, AnonDomain<%s>, AnonIP<%s>' % (log_name_in, log_name_out, anon_domain, anon_ip) )
+        print(config)
 
-    if not os.path.exists(log_name_in):
-        os.mkfifo(log_name_in)
+        input_file = config.get('DEFAULT', 'DnsmasqLogIn') if not args.input else args.input
+        output_file = config.get('DEFAULT', 'DnsmasqLogIn') if not args.output else args.output
+        anon_domain = config.get('DEFAULT', 'AnonDomain') if not args.domain else args.domain
+        anon_ip = config.get('DEFAULT', 'AnonIP') if not args.address else args.address
 
-    log_in = open(log_name_in, 'r')
-    log_out = open(log_name_out, 'a')
+
+    input_file = args.input if args.input else input_file
+    output_file = args.output if args.output else output_file
+    anon_domain = args.domain if args.domain else anon_domain
+    anon_ip = args.address if args.address else anon_ip
+
+    print('DnsmasqLogIn<%s>, DnsmasqLogOut<%s>, AnonDomain<%s>, AnonIP<%s>' % (input_file, output_file, anon_domain, anon_ip) )
+
+    if not os.path.exists(input_file):
+        os.mkfifo(input_file)
+
+    log_in = get_file(args.input, input_file, 'r')
+    log_out = get_file(args.output, output_file, 'a')
 
     # new logs are stored here whilst the query is being processed
     log_entries = {}

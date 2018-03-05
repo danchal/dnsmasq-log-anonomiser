@@ -2,13 +2,13 @@
 
 A command line tool to anonymise the log of dnsmasq in real time.
 
-####Before
+#### Before
 
         Mar  5 00:00:36 dnsmasq[5347]: 30997 192.168.0.128/55189 query[A] google.com from 192.168.0.128
         Mar  5 00:00:36 dnsmasq[5347]: 30997 192.168.0.128/55189 forwarded google.com to 8.8.8.8
         Mar  5 00:00:36 dnsmasq[5347]: 30997 192.168.0.128/55189 reply google.com is 216.58.201.110
 
-####After
+#### After
 
         Mar 5 00:00:36 dnsmasq[5347]: 30997 192.168.0.128/55189 query[A] example.com from 192.168.0.128
         Mar 5 00:00:36 dnsmasq[5347]: 30997 192.168.0.128/55189 forwarded example.com to 8.8.8.8

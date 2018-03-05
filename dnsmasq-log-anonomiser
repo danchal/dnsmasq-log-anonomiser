@@ -1,5 +1,7 @@
 #!/usr/bin/python3
-import os, time, sys, configparser, argparse
+import os, time, sys
+import configparser, argparse
+import logging
 
 END_ACTIONS = ['cached', 'reply']
 ALLOW_IP_ACTIONS = ['query[A]', 'query[AAAA]', 'query[PTR]', 'query[SRV]', 'forwarded']
@@ -8,68 +10,92 @@ FLUSH_INTERVAL = 1
 DNS_TIMEOUT = 5
 FIELD_COUNT = 10
 
+logger = logging.getLogger()
+formatter = logging.Formatter('[%(levelname)s][%(module)s.%(funcName)s] %(message)s')
+logger.setLevel(logging.INFO)
+
+class Settings:
+    conf = {}
+
+    @staticmethod
+    def get(name):
+        return Settings.conf[name]
+
+    @staticmethod
+    def set(name, value):
+        Settings.conf[name] = value
+
 def print_log_line(file, fields):
     line = ''
-    for v in fields[:FIELD_COUNT]:
-        line = line + ' ' + str(v) if line else str(v)
+    for f in fields[:FIELD_COUNT]:
+        line = line + ' ' + str(f) if line else str(f)
     line = line + '\n'
     file.write(line)
 
-def process_arguments():
+def parse_arguments():
     parser = argparse.ArgumentParser(description='Dnsmasq log anonomiser.')
     parser.add_argument('-c','--config', help='configuration file',required=False, type=str)
     parser.add_argument('-i','--input', help='input dnsmasq log file',required=False, type=str)
     parser.add_argument('-o','--output', help='output dnsmasq log file',required=False, type=str)
     parser.add_argument('-d','--domain', help='anonomous domain',required=False, type=str)
     parser.add_argument('-a','--address', help='anonomous ip address',required=False, type=str)
+    parser.add_argument('-l','--log', help='create a log file',required=False, type=str)
+    parser.add_argument('-v','--verbose', help='verbose logging',required=False, type=str)
 
     args = parser.parse_args()
-    settings = vars(args)
 
-    settings['address'] = '1.2.3.4'
+    if args.log:
+        fh = logging.FileHandler(args.log)
+        fh.setFormatter(formatter)
+        logger.addHandler(fh)
+    else:
+        ch = logging.StreamHandler()
+        ch.setFormatter(formatter)
+        logger.addHandler(ch)
 
-    print('Arg: settings<%s>' % settings)
-    return settings
+    if args.verbose:
+        logger.setLevel(logging.DEBUG)
 
-def process_configuration_file(settings):
+    logger.debug('args<%s>', args)
+
+    Settings.conf = vars(args)
+    logger.debug('Settings<%s>', Settings.conf)
+
+def parse_configuration_file():
     config = configparser.ConfigParser()
-    print('1 %s' % settings)
-    if settings['config'] is not None:
-        print('Configuration file<%s>' % settings['config'])
-        config.read(settings['config'])
-        print('config<%s>' % config)
+
+    if Settings.get('config') is not None:
+        logger.info('Configuration file<%s>', Settings.get('config'))
+        config.read(Settings.get('config'))
+        logger.debug('config<%s>', config)
 
         # use configuration file setting only if not already overridden by a configuration parameter
-        for k, v in settings.items():
-            settings[k] = config.get('DEFAULT', k) if not v else v
+        for k, v in Settings.conf.items():
+            Settings.set(k, config.get('DEFAULT', k) if not v else v)
 
-        print('Conf: settings<%s>' % settings)
+        logger.debug('Settings<%s>', Settings.conf)
 
     else:
-        print('No configuration file used')
+        logger.info('No configuration file used')
 
-def validate_settings(settings):
-    assert settings['domain'], 'domain not set'
-    assert settings['address'], 'address not set'
+def validate_settings():
+    assert Settings.get('domain'), 'domain not set'
+    assert Settings.get('address'), 'address not set'
 
-    print('validation ok')
+    logger.info('validation ok')
 
-def process_settings():
-    settings = process_arguments()
-    process_configuration_file(settings)
+def set_settings():
+    parse_arguments()
+    parse_configuration_file()
 
     # set defaults
-    settings['domain'] = 'example.com' if settings['domain'] is None else settings['domain']
-    settings['address'] = '0.0.0.0' if settings['address'] is None else settings['address']
+    Settings.set('domain', 'example.com' if Settings.get('domain') is None else Settings.get('domain'))
+    Settings.set('address', '0.0.0.0' if Settings.get('address') is None else Settings.get('address'))
 
-    validate_settings(settings)
-    print('settings<%s>' % settings)
+    validate_settings()
+    logger.info('Settings<%s>', Settings.conf)
 
-    return settings
-
-def flush_log(log, settings, log_out):
-    print('flushing log')
-
+def flush_expired_logs_to_file(log, file):
     keys = []
 
     # get list of keys that have timed out
@@ -79,97 +105,108 @@ def flush_log(log, settings, log_out):
 
     # flush the keys
     for k in keys:
-        process_log(log=log[k], settings=settings, log_out=log_out)
+        anonomise_output(fields_list=log[k], file=file)
         del log[k]
-        print('deleted<%s>' % k)
+        logger.info('flushed<%s>', k)
 
-def process_log(log, settings, log_out):
-    for fields in log:
+def anonomise_output(fields_list, file):
+    for fields in fields_list:
         # anonomise the domain
-        fields[7] = settings['domain']
+        fields[7] = Settings.get('domain')
 
         if fields[6] not in ALLOW_IP_ACTIONS:
             # anonomise the ip address
-            fields[9] = settings['address']
+            fields[9] = Settings.get('address')
 
-        print_log_line(log_out, fields)
+        print_log_line(file=file, fields=fields)
 
-def get_io(input, output):
+def get_input_output_files():
     # default input to stdin
-    if input is None:
+    if Settings.get('input') is None:
         log_in = sys.stdin
     else:
-        log_in = open(input, 'r')
+        log_in = open(Settings.get('input'), 'r')
 
     # default output to stdout
-    if output is None:
+    if Settings.get('output') is None:
         log_out = sys.stdout
     else:
-        log_out = open(output, 'a')
+        log_out = open(Settings.get('output'), 'a')
 
     return log_in, log_out
+
+def process_log(input_file, output_file):
+    logger.info('Started')
+    # new logs are stored here whilst the query is being processed
+    raw_log = {}
+
+    # timer to periodically flush the raw_log (as some logs do not have a reply)
+    log_flush_time = time.time()
+
+    while True:
+        line = input_file.readline()[:-1]
+        if line:
+            fields = line.split()
+
+            # only process actual dns response logs, i.e. with 10 fields
+            if len(fields) == FIELD_COUNT:
+                id = fields[4]
+                action = fields[6]
+                context = fields[8]
+
+                # add log creation time
+                fields.append(int(time.time()))
+
+                # create entry in log dictionary
+                if id not in raw_log:
+                    raw_log[id] = [fields]
+                else:
+                    value = raw_log[id]
+                    value.append(fields)
+                    raw_log[id] = value
+
+                # final dns response
+                if context == FINAL_RESPONSE_CONTEXT:
+                    # filter the allowed responses
+                    if action in END_ACTIONS:
+                        anonomise_output(fields_list=raw_log[id], file=output_file)
+                    else:
+                        for fields in raw_log[id]:
+                            print_log_line(file=output_file, fields=fields)
+
+                    # delete reply logs
+                    del raw_log[id]
+
+            # do not process line, just print it out
+            else:
+                output_file.write(line + '\n')
+
+            # flush the log immediately
+            output_file.flush()
+        else:
+            time.sleep(1)
+            if len(raw_log) > 0 and (time.time() - FLUSH_INTERVAL) > log_flush_time:
+                # reset the timer
+                log_flush_time = time.time()
+                flush_expired_logs_to_file(log=raw_log, file=output_file)
 
 def main():
     try:
         print('Starting ' + __file__ )
 
-        # new logs are stored here whilst the query is being processed
-        log_entries = {}
+        set_settings()
+        input_file, output_file = get_input_output_files()
 
-        # dictionary to store all the settings
-        settings = process_settings()
-        log_in, log_out = get_io(settings['input'], settings['output'])
-
-        # timer to periodically flush the log_entries (as some logs do not have a reply)
-        log_flush_time = time.time()
-
-        while True:
-            line = log_in.readline()[:-1]
-            if line:
-                fields = line.split()
-
-                # only process actual dns response logs, i.e. with 10 fields
-                if len(fields) == FIELD_COUNT:
-                    id = fields[4]
-                    action = fields[6]
-                    context = fields[8]
-
-                    # add log creation time
-                    fields.append(int(time.time()))
-
-                    # create entry in log dictionary
-                    if id not in log_entries:
-                        log_entries[id] = [fields]
-                    else:
-                        value = log_entries[id]
-                        value.append(fields)
-                        log_entries[id] = value
-
-                    # final dns response
-                    if context == FINAL_RESPONSE_CONTEXT:
-                        # filter the allowed responses
-                        if action in END_ACTIONS:
-                            process_log(log=log_entries[id], settings=settings, log_out=log_out)
-                        else:
-                            for fields in log_entries[id]:
-                                print_log_line(log_out, fields)
-
-                        # delete reply logs
-                        del log_entries[id]
-                        print('len(log_entries)<%s>%s' % (len(log_entries), log_entries.keys()) )
-
-                # do not process line, just print it out
-                else:
-                    log_out.write(line + '\n')
-
-                # flush the log immediately
-                log_out.flush()
-            else:
-                time.sleep(1)
-                if len(log_entries) > 0 and (time.time() - FLUSH_INTERVAL) > log_flush_time:
-                    # reset the timer
-                    log_flush_time = time.time()
-                    flush_log(log=log_entries, settings=settings, log_out=log_out)
+        try:
+            process_log(input_file, output_file)
+        finally:
+            # do not close stdin or stdout
+            if input_file.name != '<stdin>':
+                input_file.close()
+                logger.info('closed<%s>', input_file.name)
+            if output_file.name != '<stdout>':
+                output_file.close()
+                logger.info('closed<%s>', output_file.name)
 
     except KeyboardInterrupt:
         # here you put any code you want to run before the program
@@ -189,8 +226,6 @@ def main():
         raise
 
     finally:
-        log_in.close()
-        log_out.close()
         print('Finally Exited')
 
 if __name__ == '__main__':

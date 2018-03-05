@@ -3,6 +3,7 @@ import os, time, sys
 import configparser, argparse
 import logging
 
+LOG_FIELDS = ['0', '1', '2', '3', 'id', 'client', 'action', 'domain', 'context', 'address']
 END_ACTIONS = ['cached', 'reply']
 ALLOW_IP_ACTIONS = ['query[A]', 'query[AAAA]', 'query[PTR]', 'query[SRV]', 'forwarded']
 FINAL_RESPONSE_CONTEXT = 'is'
@@ -25,13 +26,6 @@ class Settings:
     def set(name, value):
         Settings.conf[name] = value
 
-def print_log_line(file, fields):
-    line = ''
-    for f in fields[:FIELD_COUNT]:
-        line = line + ' ' + str(f) if line else str(f)
-    line = line + '\n'
-    file.write(line)
-
 def parse_arguments():
     parser = argparse.ArgumentParser(description='Dnsmasq log anonomiser.')
     parser.add_argument('-c','--config', help='configuration file',required=False, type=str)
@@ -40,7 +34,7 @@ def parse_arguments():
     parser.add_argument('-d','--domain', help='anonomous domain',required=False, type=str)
     parser.add_argument('-a','--address', help='anonomous ip address',required=False, type=str)
     parser.add_argument('-l','--log', help='create a log file',required=False, type=str)
-    parser.add_argument('-v','--verbose', help='verbose logging',required=False, type=str)
+    parser.add_argument('-v','--verbose', help='verbose logging',required=False, action='store_true')
 
     args = parser.parse_args()
 
@@ -95,32 +89,46 @@ def set_settings():
     validate_settings()
     logger.info('Settings<%s>', Settings.conf)
 
+
+def print_log_record(file, record):
+    logger.debug('id<%s>', record['id'])
+    # omit the timestamp column
+    file.write(' '.join(list(record.values())[:FIELD_COUNT]) + '\n')
+
 def flush_expired_logs_to_file(log, file):
+    logger.debug('log<%s>', len(log))
     keys = []
 
     # get list of keys that have timed out
     for k, v in log.items():
-        if (time.time() - DNS_TIMEOUT) > v[0][-1]:
+        logger.debug('key<%s>, timestamp<%s>', k, v[0]['timestamp'])
+        if (time.time() - DNS_TIMEOUT) > v[0]['timestamp']:
             keys.append(k)
+
+    logger.debug('keys<%s>', len(keys))
 
     # flush the keys
     for k in keys:
-        anonomise_output(fields_list=log[k], file=file)
+        anonomise_output(log_records=log[k], file=file)
         del log[k]
-        logger.info('flushed<%s>', k)
+        logger.debug('flushed<%s>', k)
 
-def anonomise_output(fields_list, file):
-    for fields in fields_list:
+def anonomise_output(log_records, file):
+    logger.debug('log_records<%s>', len(log_records))
+    for record in log_records:
+        logger.debug('id<%s>, action<%s>', record['id'], record['action'])
+
         # anonomise the domain
-        fields[7] = Settings.get('domain')
+        record['domain'] = Settings.get('domain')
 
-        if fields[6] not in ALLOW_IP_ACTIONS:
+        if record['action'] not in ALLOW_IP_ACTIONS:
             # anonomise the ip address
-            fields[9] = Settings.get('address')
+            record['address'] = Settings.get('address')
 
-        print_log_line(file=file, fields=fields)
+        print_log_record(file=file, record=record)
 
 def get_input_output_files():
+    logger.debug('>')
     # default input to stdin
     if Settings.get('input') is None:
         log_in = sys.stdin
@@ -138,44 +146,45 @@ def get_input_output_files():
 def process_log(input_file, output_file):
     logger.info('Started')
     # new logs are stored here whilst the query is being processed
-    raw_log = {}
+    logs = {}
 
-    # timer to periodically flush the raw_log (as some logs do not have a reply)
+    # timer to periodically flush the logs (as some logs do not have a reply)
     log_flush_time = time.time()
 
     while True:
         line = input_file.readline()[:-1]
         if line:
-            fields = line.split()
+            log_record = dict(zip(LOG_FIELDS, line.split()))
+            logger.debug('id<%s>', log_record['id'])
 
-            # only process actual dns response logs, i.e. with 10 fields
-            if len(fields) == FIELD_COUNT:
-                id = fields[4]
-                action = fields[6]
-                context = fields[8]
+            # only process actual dns response logs, i.e. with 10 log_record
+            if len(log_record) == FIELD_COUNT:
+                id = log_record['id']
+                action = log_record['action']
+                context = log_record['context']
 
                 # add log creation time
-                fields.append(int(time.time()))
+                log_record['timestamp'] = int(time.time())
 
-                # create entry in log dictionary
-                if id not in raw_log:
-                    raw_log[id] = [fields]
+                # create new log record set entry in log dictionary
+                if id not in logs:
+                    logs[id] = [log_record]
                 else:
-                    value = raw_log[id]
-                    value.append(fields)
-                    raw_log[id] = value
+                    records = logs[id]
+                    records.append(log_record)
+                    logs[id] = records
 
                 # final dns response
                 if context == FINAL_RESPONSE_CONTEXT:
                     # filter the allowed responses
                     if action in END_ACTIONS:
-                        anonomise_output(fields_list=raw_log[id], file=output_file)
+                        anonomise_output(log_records=logs[id], file=output_file)
                     else:
-                        for fields in raw_log[id]:
-                            print_log_line(file=output_file, fields=fields)
+                        for log_record in logs[id]:
+                            print_log_record(file=output_file, record=log_record)
 
                     # delete reply logs
-                    del raw_log[id]
+                    del logs[id]
 
             # do not process line, just print it out
             else:
@@ -185,10 +194,10 @@ def process_log(input_file, output_file):
             output_file.flush()
         else:
             time.sleep(1)
-            if len(raw_log) > 0 and (time.time() - FLUSH_INTERVAL) > log_flush_time:
+            if len(logs) > 0 and (time.time() - FLUSH_INTERVAL) > log_flush_time:
                 # reset the timer
                 log_flush_time = time.time()
-                flush_expired_logs_to_file(log=raw_log, file=output_file)
+                flush_expired_logs_to_file(log=logs, file=output_file)
 
 def main():
     try:

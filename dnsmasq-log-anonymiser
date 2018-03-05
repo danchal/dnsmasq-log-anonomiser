@@ -27,13 +27,13 @@ class Settings:
         Settings.conf[name] = value
 
 def parse_arguments():
-    parser = argparse.ArgumentParser(description='Dnsmasq log anonomiser.')
-    parser.add_argument('-c','--config', help='configuration file',required=False, type=str)
+    parser = argparse.ArgumentParser(description='Dnsmasq log anonymiser.')
+    parser.add_argument('-c','--config', help='use a configuration file',required=False, type=str)
     parser.add_argument('-i','--input', help='input dnsmasq log file',required=False, type=str)
     parser.add_argument('-o','--output', help='output dnsmasq log file',required=False, type=str)
-    parser.add_argument('-d','--domain', help='anonomous domain',required=False, type=str)
-    parser.add_argument('-a','--address', help='anonomous ip address',required=False, type=str)
-    parser.add_argument('-l','--log', help='create a log file',required=False, type=str)
+    parser.add_argument('-d','--domain', help='anonymous domain',required=False, type=str)
+    parser.add_argument('-a','--address', help='anonymous ip address',required=False, type=str)
+    parser.add_argument('-l','--log', help='log to a file',required=False, type=str)
     parser.add_argument('-v','--verbose', help='verbose logging',required=False, action='store_true')
 
     args = parser.parse_args()
@@ -65,7 +65,10 @@ def parse_configuration_file():
 
         # use configuration file setting only if not already overridden by a configuration parameter
         for k, v in Settings.conf.items():
-            Settings.set(k, config.get('DEFAULT', k) if not v else v)
+            try:
+                Settings.set(k, config.get('DEFAULT', k) if not v else v)
+            except configparser.NoOptionError:
+                None
 
         logger.debug('Settings<%s>', Settings.conf)
 
@@ -89,7 +92,6 @@ def set_settings():
     validate_settings()
     logger.info('Settings<%s>', Settings.conf)
 
-
 def print_log_record(file, record):
     logger.debug('id<%s>', record['id'])
     # omit the timestamp column
@@ -109,20 +111,20 @@ def flush_expired_logs_to_file(log, file):
 
     # flush the keys
     for k in keys:
-        anonomise_output(log_records=log[k], file=file)
+        anonymise_output(log_records=log[k], file=file)
         del log[k]
-        logger.debug('flushed<%s>', k)
+        logger.info('flushed<%s>', k)
 
-def anonomise_output(log_records, file):
+def anonymise_output(log_records, file):
     logger.debug('log_records<%s>', len(log_records))
     for record in log_records:
         logger.debug('id<%s>, action<%s>', record['id'], record['action'])
 
-        # anonomise the domain
+        # anonymise the domain
         record['domain'] = Settings.get('domain')
 
         if record['action'] not in ALLOW_IP_ACTIONS:
-            # anonomise the ip address
+            # anonymise the ip address
             record['address'] = Settings.get('address')
 
         print_log_record(file=file, record=record)
@@ -178,7 +180,7 @@ def process_log(input_file, output_file):
                 if context == FINAL_RESPONSE_CONTEXT:
                     # filter the allowed responses
                     if action in END_ACTIONS:
-                        anonomise_output(log_records=logs[id], file=output_file)
+                        anonymise_output(log_records=logs[id], file=output_file)
                     else:
                         for log_record in logs[id]:
                             print_log_record(file=output_file, record=log_record)
@@ -218,24 +220,14 @@ def main():
                 logger.info('closed<%s>', output_file.name)
 
     except KeyboardInterrupt:
-        # here you put any code you want to run before the program
-        # exits when you press CTRL+C
         print('You Exited')
 
     except SystemExit:
-        # here you put any code you want to run before the program
-        # exits when you press CTRL+C
-        print('SystemExit')
+        None
 
     except:
-        # this catches ALL other exceptions including errors.
-        # You won't get any error messages for debugging
-        # so only use it once your code is working
         print('Unexpected error:', sys.exc_info()[0])
         raise
-
-    finally:
-        print('Finally Exited')
 
 if __name__ == '__main__':
     try:

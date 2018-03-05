@@ -1,28 +1,21 @@
 #!/usr/bin/python3
 import os, time, sys, configparser, argparse
 
-print('Starting ' + __file__ )
+END_ACTIONS = ['cached', 'reply']
+ALLOW_IP_ACTIONS = ['query[A]', 'query[AAAA]', 'query[PTR]', 'query[SRV]', 'forwarded']
+FINAL_RESPONSE_CONTEXT = 'is'
+FLUSH_INTERVAL = 1
+DNS_TIMEOUT = 5
+FIELD_COUNT = 10
 
-try:
-    END_ACTIONS = ['cached', 'reply']
-    ALLOW_IP_ACTIONS = ['query[A]', 'query[AAAA]', 'query[PTR]', 'query[SRV]', 'forwarded']
-    FINAL_RESPONSE_CONTEXT = 'is'
+def print_log_line(file, fields):
+    line = ''
+    for v in fields[:FIELD_COUNT]:
+        line = line + ' ' + str(v) if line else str(v)
+    line = line + '\n'
+    file.write(line)
 
-    def print_log_line(file, fields):
-        file.write('%s %s %s %s %s %s %s %s %s %s\n' % (fields[0], fields[1], fields[2], fields[3], fields[4], fields[5], fields[6], fields[7], fields[8], fields[9] ))
-        return
-
-    def get_file(argument, config, option):
-        if argument:
-            file_path = argument
-        elif config:
-            file_path = config
-        else:
-            file_path = sys.stdin
-
-        file = open(file_path, option)
-        return file
-
+def process_arguments():
     parser = argparse.ArgumentParser(description='Dnsmasq log anonomiser.')
     parser.add_argument('-c','--config', help='configuration file',required=False, type=str)
     parser.add_argument('-i','--input', help='input dnsmasq log file',required=False, type=str)
@@ -31,107 +24,178 @@ try:
     parser.add_argument('-a','--address', help='anonomous ip address',required=False, type=str)
 
     args = parser.parse_args()
+    settings = vars(args)
 
-    print(args)
+    settings['address'] = '1.2.3.4'
 
-    config = configparser.RawConfigParser()
+    print('Arg: settings<%s>' % settings)
+    return settings
 
-    if args.config:
-        config.read(args.config)
+def process_configuration_file(settings):
+    config = configparser.ConfigParser()
+    print('1 %s' % settings)
+    if settings['config'] is not None:
+        print('Configuration file<%s>' % settings['config'])
+        config.read(settings['config'])
+        print('config<%s>' % config)
 
-        print(config)
+        # use configuration file setting only if not already overridden by a configuration parameter
+        for k, v in settings.items():
+            settings[k] = config.get('DEFAULT', k) if not v else v
 
-        input_file = config.get('DEFAULT', 'DnsmasqLogIn') if not args.input else args.input
-        output_file = config.get('DEFAULT', 'DnsmasqLogIn') if not args.output else args.output
-        anon_domain = config.get('DEFAULT', 'AnonDomain') if not args.domain else args.domain
-        anon_ip = config.get('DEFAULT', 'AnonIP') if not args.address else args.address
+        print('Conf: settings<%s>' % settings)
 
+    else:
+        print('No configuration file used')
 
-    input_file = args.input if args.input else input_file
-    output_file = args.output if args.output else output_file
-    anon_domain = args.domain if args.domain else anon_domain
-    anon_ip = args.address if args.address else anon_ip
+def validate_settings(settings):
+    assert settings['domain'], 'domain not set'
+    assert settings['address'], 'address not set'
 
-    print('DnsmasqLogIn<%s>, DnsmasqLogOut<%s>, AnonDomain<%s>, AnonIP<%s>' % (input_file, output_file, anon_domain, anon_ip) )
+    print('validation ok')
 
-    if not os.path.exists(input_file):
-        os.mkfifo(input_file)
+def process_settings():
+    settings = process_arguments()
+    process_configuration_file(settings)
 
-    log_in = get_file(args.input, input_file, 'r')
-    log_out = get_file(args.output, output_file, 'a')
+    # set defaults
+    settings['domain'] = 'example.com' if settings['domain'] is None else settings['domain']
+    settings['address'] = '0.0.0.0' if settings['address'] is None else settings['address']
 
-    # new logs are stored here whilst the query is being processed
-    log_entries = {}
+    validate_settings(settings)
+    print('settings<%s>' % settings)
 
-    while True:
-        line = log_in.readline()[:-1]
-        if line:
-            fields = line.split()
+    return settings
 
-            # only process actual dns response logs, i.e. with 10 fields
-            if len(fields) == 10:
-                id = fields[4]
-                action = fields[6]
-                context = fields[8]
-                domain = fields[7]
-                ip_addr = fields[9]
+def flush_log(log, settings, log_out):
+    print('flushing log')
 
-                # create entry in log dictionary
-                if id not in log_entries:
-                    log_entries[id] = [fields]
-                else:
-                    value = log_entries[id]
-                    value.append(fields)
-                    log_entries[id] = value
+    keys = []
 
-                # final dns response
-                if context == FINAL_RESPONSE_CONTEXT:
-                    # filter the allowed responses
-                    if action in END_ACTIONS:
-                        for fields in log_entries[id]:
+    # get list of keys that have timed out
+    for k, v in log.items():
+        if (time.time() - DNS_TIMEOUT) > v[0][-1]:
+            keys.append(k)
 
-                            # anonomise the domain
-                            fields[7] = anon_domain
+    # flush the keys
+    for k in keys:
+        process_log(log=log[k], settings=settings, log_out=log_out)
+        del log[k]
+        print('deleted<%s>' % k)
 
-                            if fields[6] not in ALLOW_IP_ACTIONS:
-                                # anonomise the ip address
-                                fields[9] = anon_ip
+def process_log(log, settings, log_out):
+    for fields in log:
+        # anonomise the domain
+        fields[7] = settings['domain']
 
-                            print_log_line(log_out, fields)
+        if fields[6] not in ALLOW_IP_ACTIONS:
+            # anonomise the ip address
+            fields[9] = settings['address']
+
+        print_log_line(log_out, fields)
+
+def get_io(input, output):
+    # default input to stdin
+    if input is None:
+        log_in = sys.stdin
+    else:
+        log_in = open(input, 'r')
+
+    # default output to stdout
+    if output is None:
+        log_out = sys.stdout
+    else:
+        log_out = open(output, 'a')
+
+    return log_in, log_out
+
+def main():
+    try:
+        print('Starting ' + __file__ )
+
+        # new logs are stored here whilst the query is being processed
+        log_entries = {}
+
+        # dictionary to store all the settings
+        settings = process_settings()
+        log_in, log_out = get_io(settings['input'], settings['output'])
+
+        # timer to periodically flush the log_entries (as some logs do not have a reply)
+        log_flush_time = time.time()
+
+        while True:
+            line = log_in.readline()[:-1]
+            if line:
+                fields = line.split()
+
+                # only process actual dns response logs, i.e. with 10 fields
+                if len(fields) == FIELD_COUNT:
+                    id = fields[4]
+                    action = fields[6]
+                    context = fields[8]
+
+                    # add log creation time
+                    fields.append(int(time.time()))
+
+                    # create entry in log dictionary
+                    if id not in log_entries:
+                        log_entries[id] = [fields]
                     else:
-                        for fields in log_entries[id]:
-                            print_log_line(log_out, fields)
+                        value = log_entries[id]
+                        value.append(fields)
+                        log_entries[id] = value
 
-                    # delete reply logs
-                    del log_entries[id]
+                    # final dns response
+                    if context == FINAL_RESPONSE_CONTEXT:
+                        # filter the allowed responses
+                        if action in END_ACTIONS:
+                            process_log(log=log_entries[id], settings=settings, log_out=log_out)
+                        else:
+                            for fields in log_entries[id]:
+                                print_log_line(log_out, fields)
 
-            # do not process line, just print it out
+                        # delete reply logs
+                        del log_entries[id]
+                        print('len(log_entries)<%s>%s' % (len(log_entries), log_entries.keys()) )
+
+                # do not process line, just print it out
+                else:
+                    log_out.write(line + '\n')
+
+                # flush the log immediately
+                log_out.flush()
             else:
-                log_out.write(line + '\n')
+                time.sleep(1)
+                if len(log_entries) > 0 and (time.time() - FLUSH_INTERVAL) > log_flush_time:
+                    # reset the timer
+                    log_flush_time = time.time()
+                    flush_log(log=log_entries, settings=settings, log_out=log_out)
 
-            # flush the log immediately
-            log_out.flush()
-        else:
-            time.sleep(1)
+    except KeyboardInterrupt:
+        # here you put any code you want to run before the program
+        # exits when you press CTRL+C
+        print('You Exited')
 
-except KeyboardInterrupt:
-    # here you put any code you want to run before the program
-    # exits when you press CTRL+C
-    print('You Exited')
+    except SystemExit:
+        # here you put any code you want to run before the program
+        # exits when you press CTRL+C
+        print('SystemExit')
 
-except SystemExit:
-    # here you put any code you want to run before the program
-    # exits when you press CTRL+C
-    print('SystemExit')
+    except:
+        # this catches ALL other exceptions including errors.
+        # You won't get any error messages for debugging
+        # so only use it once your code is working
+        print('Unexpected error:', sys.exc_info()[0])
+        raise
 
-except:
-    # this catches ALL other exceptions including errors.
-    # You won't get any error messages for debugging
-    # so only use it once your code is working
-    print('Unexpected error:', sys.exc_info()[0])
-    raise
+    finally:
+        log_in.close()
+        log_out.close()
+        print('Finally Exited')
 
-finally:
-    log_in.close()
-    log_out.close()
-    print('Finally Exited')
+if __name__ == '__main__':
+    try:
+        main()
+    except Exception as e:
+        msg = 'Last Error: %s' % e
+        print(msg)

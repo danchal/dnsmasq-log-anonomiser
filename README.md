@@ -15,7 +15,10 @@ A command line tool to anonymise the log of dnsmasq in real time.
         Mar 5 00:00:36 dnsmasq[5347]: 30997 192.168.0.128/55189 reply example.com is 0.0.0.0
 
 ## Features
-
+* Anonymises the dns request domain and response ip address logging
+* Does not interfere with the dnsmasq process itself
+* If input or output files are not explicitely declared then uses stdin / stdout
+* Debug log can be sent to separate file, otherwise uses stdout
 ## References
 [dnsmasq](http://www.thekelleys.org.uk/dnsmasq/doc.html)
 
@@ -24,6 +27,10 @@ A command line tool to anonymise the log of dnsmasq in real time.
         Dnsmasq
 
 ## Usage
+Examples
+
+        $ ./dnsmasq-log-anonymiser -i /var/log/dnsmaq.log
+        $ tail -f /var/log/dnsmaq.log | ./dnsmasq-log-anonymiser
 
         optional arguments:
           -h,         --help             show this help message and exit

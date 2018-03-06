@@ -3,9 +3,9 @@ import os, time, sys
 import configparser, argparse
 import logging
 
-LOG_FIELDS = ['0', '1', '2', '3', 'id', 'client', 'action', 'domain', 'context', 'address']
-END_ACTIONS = ['cached', 'reply']
-ALLOW_IP_ACTIONS = ['query[A]', 'query[AAAA]', 'query[PTR]', 'query[SRV]', 'forwarded']
+LOG_FIELDS = ('0', '1', '2', '3', 'id', 'client', 'action', 'domain', 'context', 'address')
+END_ACTIONS = ('cached', 'reply')
+ALLOW_IP_ACTIONS = ('query', 'forwarded')
 FINAL_RESPONSE_CONTEXT = 'is'
 FLUSH_INTERVAL = 1
 DNS_TIMEOUT = 5
@@ -33,6 +33,7 @@ def parse_arguments():
     parser.add_argument('-o','--output', help='output dnsmasq log file',required=False, type=str)
     parser.add_argument('-d','--domain', help='anonymous domain',required=False, type=str)
     parser.add_argument('-a','--address', help='anonymous ip address',required=False, type=str)
+    parser.add_argument('-n','--nodelete', help='do not delete from the input file',required=False, action='store_true')
     parser.add_argument('-l','--log', help='log to a file',required=False, type=str)
     parser.add_argument('-v','--verbose', help='verbose logging',required=False, action='store_true')
 
@@ -123,7 +124,7 @@ def anonymise_output(log_records, file):
         # anonymise the domain
         record['domain'] = Settings.get('domain')
 
-        if record['action'] not in ALLOW_IP_ACTIONS:
+        if record['action'].startswith(ALLOW_IP_ACTIONS):
             # anonymise the ip address
             record['address'] = Settings.get('address')
 
@@ -135,7 +136,7 @@ def get_input_output_files():
     if Settings.get('input') is None:
         log_in = sys.stdin
     else:
-        log_in = open(Settings.get('input'), 'r')
+        log_in = open(Settings.get('input'), 'r+')
 
     # default output to stdout
     if Settings.get('output') is None:
@@ -157,10 +158,11 @@ def process_log(input_file, output_file):
         line = input_file.readline()[:-1]
         if line:
             log_record = dict(zip(LOG_FIELDS, line.split()))
-            logger.debug('id<%s>', log_record['id'])
 
             # only process actual dns response logs, i.e. with 10 log_record
             if len(log_record) == FIELD_COUNT:
+                logger.debug('id<%s>', log_record['id'])
+
                 id = log_record['id']
                 action = log_record['action']
                 context = log_record['context']
@@ -192,8 +194,12 @@ def process_log(input_file, output_file):
             else:
                 output_file.write(line + '\n')
 
-            # flush the log immediately
+            # write the file immediately
             output_file.flush()
+
+            # delete the line from input file
+            if not Settings.get('nodelete'):
+                del line
         else:
             time.sleep(1)
             if len(logs) > 0 and (time.time() - FLUSH_INTERVAL) > log_flush_time:

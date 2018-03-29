@@ -86,6 +86,9 @@ def set_settings():
     parse_arguments()
     parse_configuration_file()
 
+    if Settings.get('verbose'):
+        logger.setLevel(logging.DEBUG)
+
     # set defaults
     Settings.set('domain', 'example.com' if Settings.get('domain') is None else Settings.get('domain'))
     Settings.set('address', '0.0.0.0' if Settings.get('address') is None else Settings.get('address'))

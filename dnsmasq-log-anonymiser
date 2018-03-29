@@ -1,9 +1,9 @@
 #!/usr/bin/python3
-import os, time, sys
+import os, time, sys, io
 import configparser, argparse
 import logging
 
-LOG_FIELDS = ('0', '1', '2', '3', 'id', 'client', 'action', 'domain', 'context', 'address')
+LOG_FIELDS = ('0', '1', '2', 'pid', 'id', 'client', 'action', 'domain', 'context', 'address')
 END_ACTIONS = ('cached', 'reply')
 ALLOW_IP_ACTIONS = ('query', 'forwarded')
 FINAL_RESPONSE_CONTEXT = 'is'
@@ -94,11 +94,11 @@ def set_settings():
     logger.info('Settings<%s>', Settings.conf)
 
 def print_log_record(file, record):
-    logger.debug('id<%s>', record['id'])
+    logger.debug('pid<%s>, id<%s>', record['pid'], record['id'])
     # omit the timestamp column
     file.write(' '.join(list(record.values())[:FIELD_COUNT]) + '\n')
 
-def flush_expired_logs_to_file(log, file):
+def get_expired_queries(log):
     logger.debug('log<%s>', len(log))
     keys = []
 
@@ -109,25 +109,31 @@ def flush_expired_logs_to_file(log, file):
             keys.append(k)
 
     logger.debug('keys<%s>', len(keys))
+    return keys
 
-    # flush the keys
+def flush_expired_logs_to_file(log, file):
+    keys = get_expired_queries(log)
+
+    # flush the queries
     for k in keys:
-        anonymise_output(log_records=log[k], file=file)
+        process_query(log_records=log[k], file=file)
         del log[k]
         logger.info('flushed<%s>', k)
 
-def anonymise_output(log_records, file):
+def anonymise_record(record):
+    logger.debug('pid<%s>, id<%s>, action<%s>', record['pid'], record['id'], record['action'])
+
+    # anonymise the domain
+    record['domain'] = Settings.get('domain')
+
+    if record['action'].startswith(ALLOW_IP_ACTIONS):
+        # anonymise the ip address
+        record['address'] = Settings.get('address')
+
+def process_query(log_records, file):
     logger.debug('log_records<%s>', len(log_records))
     for record in log_records:
-        logger.debug('id<%s>, action<%s>', record['id'], record['action'])
-
-        # anonymise the domain
-        record['domain'] = Settings.get('domain')
-
-        if record['action'].startswith(ALLOW_IP_ACTIONS):
-            # anonymise the ip address
-            record['address'] = Settings.get('address')
-
+        anonymise_record(record)
         print_log_record(file=file, record=record)
 
 def get_input_output_files():
@@ -146,6 +152,9 @@ def get_input_output_files():
 
     return log_in, log_out
 
+def get_key(record):
+    return record['pid'] + record['id']
+
 def process_log(input_file, output_file):
     logger.info('Started')
     # new logs are stored here whilst the query is being processed
@@ -158,12 +167,12 @@ def process_log(input_file, output_file):
         line = input_file.readline()[:-1]
         if line:
             log_record = dict(zip(LOG_FIELDS, line.split()))
+            # only process actual dns response logs, i.e. where id is a number
+            if str.isdigit(log_record['id']):
+                # in order to be unique, key is combination of process id and query id
+                key = get_key(log_record)
+                logger.debug('key<%s>', key)
 
-            # only process actual dns response logs, i.e. with 10 log_record
-            if len(log_record) == FIELD_COUNT:
-                logger.debug('id<%s>', log_record['id'])
-
-                id = log_record['id']
                 action = log_record['action']
                 context = log_record['context']
 
@@ -171,24 +180,24 @@ def process_log(input_file, output_file):
                 log_record['timestamp'] = int(time.time())
 
                 # create new log record set entry in log dictionary
-                if id not in logs:
-                    logs[id] = [log_record]
+                if key not in logs:
+                    logs[key] = [log_record]
                 else:
-                    records = logs[id]
+                    records = logs[key]
                     records.append(log_record)
-                    logs[id] = records
+                    logs[key] = records
 
                 # final dns response
                 if context == FINAL_RESPONSE_CONTEXT:
                     # filter the allowed responses
                     if action in END_ACTIONS:
-                        anonymise_output(log_records=logs[id], file=output_file)
+                        process_query(log_records=logs[key], file=output_file)
                     else:
-                        for log_record in logs[id]:
+                        for log_record in logs[key]:
                             print_log_record(file=output_file, record=log_record)
 
                     # delete reply logs
-                    del logs[id]
+                    del logs[key]
 
             # do not process line, just print it out
             else:
@@ -199,7 +208,10 @@ def process_log(input_file, output_file):
 
             # delete the line from input file
             if not Settings.get('nodelete'):
-                del line
+                try:
+                    input_file.truncate(0)
+                except io.UnsupportedOperation:
+                    None
         else:
             time.sleep(1)
             if len(logs) > 0 and (time.time() - FLUSH_INTERVAL) > log_flush_time:
@@ -209,7 +221,7 @@ def process_log(input_file, output_file):
 
 def main():
     try:
-        print('Starting ' + __file__ )
+        logger.debug('Starting ' + __file__ )
 
         set_settings()
         input_file, output_file = get_input_output_files()
@@ -226,13 +238,13 @@ def main():
                 logger.info('closed<%s>', output_file.name)
 
     except KeyboardInterrupt:
-        print('You Exited')
+        logger.debug('You Exited')
 
     except SystemExit:
         None
 
     except:
-        print('Unexpected error:', sys.exc_info()[0])
+        logger.error('Unexpected error:', sys.exc_info()[0])
         raise
 
 if __name__ == '__main__':

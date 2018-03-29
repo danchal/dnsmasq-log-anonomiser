@@ -142,7 +142,11 @@ def get_input_output_files():
     if Settings.get('input') is None:
         log_in = sys.stdin
     else:
-        log_in = open(Settings.get('input'), 'r+')
+        try:
+            log_in = open(Settings.get('input'), 'r+')
+        except FileNotFoundError:
+            logger.error('FileNotFoundError: <%s>', Settings.get('input'))
+            raise
 
     # default output to stdout
     if Settings.get('output') is None:
@@ -242,10 +246,6 @@ def main():
 
     except SystemExit:
         None
-
-    except:
-        logger.error('Unexpected error:', sys.exc_info()[0])
-        raise
 
 if __name__ == '__main__':
     try:

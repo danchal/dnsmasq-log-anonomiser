@@ -9,7 +9,7 @@ ALLOW_IP_ACTIONS = ('query', 'forwarded')
 FINAL_RESPONSE_CONTEXT = 'is'
 FLUSH_INTERVAL = 1
 DNS_TIMEOUT = 5
-FIELD_COUNT = 10
+FIELD_COUNT = len(LOG_FIELDS)
 
 logger = logging.getLogger()
 formatter = logging.Formatter('[%(levelname)s][%(module)s.%(funcName)s] %(message)s')
@@ -33,7 +33,6 @@ def parse_arguments():
     parser.add_argument('-o','--output', help='output dnsmasq log file',required=False, type=str)
     parser.add_argument('-d','--domain', help='anonymous domain',required=False, type=str)
     parser.add_argument('-a','--address', help='anonymous ip address',required=False, type=str)
-    parser.add_argument('-n','--nodelete', help='do not delete from the input file',required=False, action='store_true')
     parser.add_argument('-l','--log', help='log to a file',required=False, type=str)
     parser.add_argument('-v','--verbose', help='verbose logging',required=False, action='store_true')
 
@@ -146,7 +145,7 @@ def get_input_output_files():
         log_in = sys.stdin
     else:
         try:
-            log_in = open(Settings.get('input'), 'r+')
+            log_in = open(Settings.get('input'), 'r')
         except FileNotFoundError:
             logger.error('FileNotFoundError: <%s>', Settings.get('input'))
             raise
@@ -171,11 +170,15 @@ def process_log(input_file, output_file):
     log_flush_time = time.time()
 
     while True:
-        line = input_file.readline()[:-1]
+        # read the line
+        line = input_file.readline()
+
+        # only process a complete line
         if line:
+            logger.debug('line<%s>', line)
             log_record = dict(zip(LOG_FIELDS, line.split()))
             # only process actual dns response logs, i.e. where id is a number
-            if str.isdigit(log_record['id']):
+            if len(log_record) == FIELD_COUNT and str.isdigit(log_record['id']):
                 # in order to be unique, key is combination of process id and query id
                 key = get_key(log_record)
                 logger.debug('key<%s>', key)
@@ -208,17 +211,8 @@ def process_log(input_file, output_file):
 
             # do not process line, just print it out
             else:
-                output_file.write(line + '\n')
+                output_file.write(line)
 
-            # write the file immediately
-            output_file.flush()
-
-            # delete the line from input file
-            if not Settings.get('nodelete'):
-                try:
-                    input_file.truncate(0)
-                except io.UnsupportedOperation:
-                    None
         else:
             time.sleep(1)
             if len(logs) > 0 and (time.time() - FLUSH_INTERVAL) > log_flush_time:

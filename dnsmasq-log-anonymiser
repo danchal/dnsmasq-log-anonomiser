@@ -139,13 +139,14 @@ def process_query(log_records, file):
         print_log_record(file=file, record=record)
 
 def get_input_output_files():
-    logger.debug('>')
     # default input to stdin
     if Settings.get('input') is None:
         log_in = sys.stdin
+        logger.debug('input is stdin')
     else:
         try:
             log_in = open(Settings.get('input'), 'r')
+            logger.debug('opened<%s>', log_in)
         except FileNotFoundError:
             logger.error('FileNotFoundError: <%s>', Settings.get('input'))
             raise
@@ -153,8 +154,10 @@ def get_input_output_files():
     # default output to stdout
     if Settings.get('output') is None:
         log_out = sys.stdout
+        logger.debug('output is stdout')
     else:
         log_out = open(Settings.get('output'), 'a')
+        logger.debug('opened<%s>', log_out)
 
     return log_in, log_out
 
@@ -219,6 +222,9 @@ def process_log(input_file, output_file):
                 # reset the timer
                 log_flush_time = time.time()
                 flush_expired_logs_to_file(log=logs, file=output_file)
+
+        #flush file
+        output_file.flush()
 
 def main():
     try:

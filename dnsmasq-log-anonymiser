@@ -47,7 +47,7 @@ def parse_arguments():
         ch.setFormatter(formatter)
         logger.addHandler(ch)
 
-    if args.verbose:
+    if args.verbose == True:
         logger.setLevel(logging.DEBUG)
 
     logger.debug('args<%s>', args)
@@ -85,7 +85,7 @@ def set_settings():
     parse_arguments()
     parse_configuration_file()
 
-    if Settings.get('verbose'):
+    if Settings.get('verbose') == True:
         logger.setLevel(logging.DEBUG)
 
     # set defaults

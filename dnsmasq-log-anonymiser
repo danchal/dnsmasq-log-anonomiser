@@ -53,7 +53,7 @@ def parse_arguments():
     logger.debug('args<%s>', args)
 
     Settings.conf = vars(args)
-    logger.debug('Settings<%s>', Settings.conf)
+    logger.info('Settings<%s>', Settings.conf)
 
 def parse_configuration_file():
     config = configparser.ConfigParser()
@@ -85,7 +85,7 @@ def set_settings():
     parse_arguments()
     parse_configuration_file()
 
-    if Settings.get('verbose') == True:
+    if Settings.get('verbose') == 'True':
         logger.setLevel(logging.DEBUG)
 
     # set defaults

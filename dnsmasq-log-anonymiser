@@ -5,7 +5,6 @@ import logging
 
 LOG_FIELDS = ('0', '1', '2', 'pid', 'id', 'client', 'action', 'domain', 'context', 'address')
 END_ACTIONS = ('cached', 'reply')
-ALLOW_IP_ACTIONS = ('query', 'forwarded')
 FINAL_RESPONSE_CONTEXT = 'is'
 FLUSH_INTERVAL = 1
 DNS_TIMEOUT = 5
@@ -110,33 +109,41 @@ def get_expired_queries(log):
         if (time.time() - DNS_TIMEOUT) > v[0]['timestamp']:
             keys.append(k)
 
-    logger.debug('keys<%s>', len(keys))
     return keys
 
 def flush_expired_logs_to_file(log, file):
     keys = get_expired_queries(log)
 
-    # flush the queries
+    # anonymise and flush the queries
     for k in keys:
-        process_query(log_records=log[k], file=file)
+        anonymise_query(records=log[k], file=file)
         del log[k]
         logger.info('flushed<%s>', k)
 
 def anonymise_record(record):
-    logger.debug('pid<%s>, id<%s>, action<%s>', record['pid'], record['id'], record['action'])
+    logger.debug('record<%s>', record)
 
     # anonymise the domain
     record['domain'] = Settings.get('domain')
 
-    if record['action'].startswith(ALLOW_IP_ACTIONS):
-        # anonymise the ip address
-        record['address'] = Settings.get('address')
+    # anonymise the ip address
+    record['address'] = Settings.get('address')
 
-def process_query(log_records, file):
-    logger.debug('log_records<%s>', len(log_records))
-    for record in log_records:
-        anonymise_record(record)
-        print_log_record(file=file, record=record)
+def anonymise_query(records, file):
+    for r in records:
+        anonymise_record(r)
+        print_log_record(file=file, record=r)
+
+def process_query(action, records, file):
+    logger.debug('records<%s>', len(records))
+
+    # filter non blocked responses
+    if action in END_ACTIONS:
+        anonymise_query(records, file)
+
+    else:
+        for r in records:
+            print_log_record(file=file, record=r)
 
 def get_input_output_files():
     # default input to stdin
@@ -202,12 +209,7 @@ def process_log(input_file, output_file):
 
                 # final dns response
                 if context == FINAL_RESPONSE_CONTEXT:
-                    # filter the allowed responses
-                    if action in END_ACTIONS:
-                        process_query(log_records=logs[key], file=output_file)
-                    else:
-                        for log_record in logs[key]:
-                            print_log_record(file=output_file, record=log_record)
+                    process_query(action=action, records=logs[key], file=output_file)
 
                     # delete reply logs
                     del logs[key]

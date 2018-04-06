@@ -126,8 +126,9 @@ def anonymise_record(record):
     # anonymise the domain
     record['domain'] = Settings.get('domain')
 
-    # anonymise the ip address
-    record['address'] = Settings.get('address')
+    if record['context'] == FINAL_RESPONSE_CONTEXT:
+        # anonymise the ip address
+        record['address'] = Settings.get('address')
 
 def anonymise_query(records, file):
     for r in records:

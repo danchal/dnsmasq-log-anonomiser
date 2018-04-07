@@ -94,10 +94,10 @@ def set_settings():
     validate_settings()
     logger.info('Settings<%s>', Settings.conf)
 
-def print_log_record(file, record):
-    logger.debug('pid<%s>, id<%s>', record['pid'], record['id'])
+def print_log_record(file, r):
+    logger.debug('pid<%s>, id<%s>', r['pid'], r['id'])
     # omit the timestamp column
-    file.write(' '.join(list(record.values())[:FIELD_COUNT]) + '\n')
+    file.write(' '.join((r['0'],r['1'],r['2'],r['pid'],r['id'],r['client'],r['action'],r['domain'],r['context'],r['address'], '\n')))
 
 def get_expired_queries(log):
     logger.debug('log<%s>', len(log))
@@ -133,7 +133,7 @@ def anonymise_record(record):
 def anonymise_query(records, file):
     for r in records:
         anonymise_record(r)
-        print_log_record(file=file, record=r)
+        print_log_record(file=file, r=r)
 
 def process_query(action, records, file):
     logger.debug('records<%s>', len(records))
@@ -145,7 +145,7 @@ def process_query(action, records, file):
     else:
         # allow through without filtering
         for r in records:
-            print_log_record(file=file, record=r)
+            print_log_record(file=file, r=r)
 
 def get_input_output_files():
     # default input to stdin

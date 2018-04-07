@@ -138,11 +138,12 @@ def anonymise_query(records, file):
 def process_query(action, records, file):
     logger.debug('records<%s>', len(records))
 
-    # filter non blocked responses
+    # filter normal query responses
     if action in END_ACTIONS:
         anonymise_query(records, file)
 
     else:
+        # allow through without filtering
         for r in records:
             print_log_record(file=file, record=r)
 

@@ -1,0 +1,262 @@
+#!/usr/bin/python3
+import os, time, sys, io
+import configparser, argparse
+import logging
+
+LOG_FIELDS = ('0', '1', '2', 'pid', 'id', 'client', 'action', 'domain', 'context', 'address')
+END_ACTIONS = ('cached', 'reply')
+FINAL_RESPONSE_CONTEXT = 'is'
+FLUSH_INTERVAL = 1
+DNS_TIMEOUT = 5
+FIELD_COUNT = len(LOG_FIELDS)
+
+logger = logging.getLogger()
+formatter = logging.Formatter('[%(levelname)s][%(module)s.%(funcName)s] %(message)s')
+logger.setLevel(logging.INFO)
+
+class Settings:
+    conf = {}
+
+    @staticmethod
+    def get(name):
+        return Settings.conf[name]
+
+    @staticmethod
+    def set(name, value):
+        Settings.conf[name] = value
+
+def parse_arguments():
+    parser = argparse.ArgumentParser(description='Dnsmasq log anonymiser.')
+    parser.add_argument('-c','--config', help='use a configuration file',required=False, type=str)
+    parser.add_argument('-i','--input', help='input dnsmasq log file',required=False, type=str)
+    parser.add_argument('-o','--output', help='output dnsmasq log file',required=False, type=str)
+    parser.add_argument('-d','--domain', help='anonymous domain',required=False, type=str)
+    parser.add_argument('-a','--address', help='anonymous ip address',required=False, type=str)
+    parser.add_argument('-l','--log', help='log to a file',required=False, type=str)
+    parser.add_argument('-v','--verbose', help='verbose logging',required=False, action='store_true')
+
+    args = parser.parse_args()
+
+    if args.log:
+        fh = logging.FileHandler(args.log)
+        fh.setFormatter(formatter)
+        logger.addHandler(fh)
+    else:
+        ch = logging.StreamHandler()
+        ch.setFormatter(formatter)
+        logger.addHandler(ch)
+
+    if args.verbose == True:
+        logger.setLevel(logging.DEBUG)
+
+    logger.debug('args<%s>', args)
+
+    Settings.conf = vars(args)
+    logger.info('Settings<%s>', Settings.conf)
+
+def parse_configuration_file():
+    config = configparser.ConfigParser()
+
+    if Settings.get('config') is not None:
+        logger.info('Configuration file<%s>', Settings.get('config'))
+        config.read(Settings.get('config'))
+        logger.debug('config<%s>', config)
+
+        # use configuration file setting only if not already overridden by a configuration parameter
+        for k, v in Settings.conf.items():
+            try:
+                Settings.set(k, config.get('DEFAULT', k) if not v else v)
+            except configparser.NoOptionError:
+                None
+
+        logger.debug('Settings<%s>', Settings.conf)
+
+    else:
+        logger.info('No configuration file used')
+
+def validate_settings():
+    assert Settings.get('domain'), 'domain not set'
+    assert Settings.get('address'), 'address not set'
+
+    logger.info('validation ok')
+
+def set_settings():
+    parse_arguments()
+    parse_configuration_file()
+
+    if Settings.get('verbose') == 'True':
+        logger.setLevel(logging.DEBUG)
+
+    # set defaults
+    Settings.set('domain', 'example.com' if Settings.get('domain') is None else Settings.get('domain'))
+    Settings.set('address', '0.0.0.0' if Settings.get('address') is None else Settings.get('address'))
+
+    validate_settings()
+    logger.info('Settings<%s>', Settings.conf)
+
+def print_log_record(file, record):
+    logger.debug('pid<%s>, id<%s>', record['pid'], record['id'])
+    # omit the timestamp column
+    file.write(' '.join(list(record.values())[:FIELD_COUNT]) + '\n')
+
+def get_expired_queries(log):
+    logger.debug('log<%s>', len(log))
+    keys = []
+
+    # get list of keys that have timed out
+    for k, v in log.items():
+        logger.debug('key<%s>, timestamp<%s>', k, v[0]['timestamp'])
+        if (time.time() - DNS_TIMEOUT) > v[0]['timestamp']:
+            keys.append(k)
+
+    return keys
+
+def flush_expired_logs_to_file(log, file):
+    keys = get_expired_queries(log)
+
+    # anonymise and flush the queries
+    for k in keys:
+        anonymise_query(records=log[k], file=file)
+        del log[k]
+        logger.info('flushed<%s>', k)
+
+def anonymise_record(record):
+    logger.debug('record<%s>', record)
+
+    # anonymise the domain
+    record['domain'] = Settings.get('domain')
+
+    if record['context'] == FINAL_RESPONSE_CONTEXT:
+        # anonymise the ip address
+        record['address'] = Settings.get('address')
+
+def anonymise_query(records, file):
+    for r in records:
+        anonymise_record(r)
+        print_log_record(file=file, record=r)
+
+def process_query(action, records, file):
+    logger.debug('records<%s>', len(records))
+
+    # filter normal query responses
+    if action in END_ACTIONS:
+        anonymise_query(records, file)
+
+    else:
+        # allow through without filtering
+        for r in records:
+            print_log_record(file=file, record=r)
+
+def get_input_output_files():
+    # default input to stdin
+    if Settings.get('input') is None:
+        log_in = sys.stdin
+        logger.debug('input is stdin')
+    else:
+        try:
+            log_in = open(Settings.get('input'), 'r')
+            logger.debug('opened<%s>', log_in)
+        except FileNotFoundError:
+            logger.error('FileNotFoundError: <%s>', Settings.get('input'))
+            raise
+
+    # default output to stdout
+    if Settings.get('output') is None:
+        log_out = sys.stdout
+        logger.debug('output is stdout')
+    else:
+        log_out = open(Settings.get('output'), 'a')
+        logger.debug('opened<%s>', log_out)
+
+    return log_in, log_out
+
+def get_key(record):
+    return record['pid'] + record['id']
+
+def process_log(input_file, output_file):
+    logger.info('Started')
+    # new logs are stored here whilst the query is being processed
+    logs = {}
+
+    # timer to periodically flush the logs (as some logs do not have a reply)
+    log_flush_time = time.time()
+
+    while True:
+        # read the line
+        line = input_file.readline()
+
+        # only process a complete line
+        if line:
+            logger.debug('line<%s>', line)
+            log_record = dict(zip(LOG_FIELDS, line.split()))
+            # only process actual dns response logs, i.e. where id is a number
+            if len(log_record) == FIELD_COUNT and str.isdigit(log_record['id']):
+                # in order to be unique, key is combination of process id and query id
+                key = get_key(log_record)
+                logger.debug('key<%s>', key)
+
+                action = log_record['action']
+                context = log_record['context']
+
+                # add log creation time
+                log_record['timestamp'] = int(time.time())
+
+                # create new log record set entry in log dictionary
+                if key not in logs:
+                    logs[key] = [log_record]
+                else:
+                    records = logs[key]
+                    records.append(log_record)
+                    logs[key] = records
+
+                # final dns response
+                if context == FINAL_RESPONSE_CONTEXT:
+                    process_query(action=action, records=logs[key], file=output_file)
+
+                    # delete reply logs
+                    del logs[key]
+
+            # do not process line, just print it out
+            else:
+                output_file.write(line)
+
+        else:
+            time.sleep(1)
+            if len(logs) > 0 and (time.time() - FLUSH_INTERVAL) > log_flush_time:
+                # reset the timer
+                log_flush_time = time.time()
+                flush_expired_logs_to_file(log=logs, file=output_file)
+
+        #flush file
+        output_file.flush()
+
+def main():
+    try:
+        logger.debug('Starting ' + __file__ )
+
+        set_settings()
+        input_file, output_file = get_input_output_files()
+
+        try:
+            process_log(input_file, output_file)
+        finally:
+            # do not close stdin or stdout
+            if input_file.name != '<stdin>':
+                input_file.close()
+                logger.info('closed<%s>', input_file.name)
+            if output_file.name != '<stdout>':
+                output_file.close()
+                logger.info('closed<%s>', output_file.name)
+
+    except KeyboardInterrupt:
+        logger.debug('You Exited')
+
+    except SystemExit:
+        None
+
+if __name__ == '__main__':
+    try:
+        main()
+    except Exception as e:
+        msg = 'Last Error: %s' % e
+        print(msg)
